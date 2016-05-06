@@ -1,0 +1,42 @@
+USE AdventureWorks2012;
+GO
+CREATE PROCEDURE HumanResources.uspGetEmployeesTest2 
+    @LastName nvarchar(50), 
+    @FirstName nvarchar(50) 
+AS 
+
+    SET NOCOUNT ON;
+    SELECT FirstName, LastName, Department
+    FROM HumanResources.vEmployeeDepartmentHistory
+    WHERE FirstName = @FirstName AND LastName = @LastName
+    AND EndDate IS NULL;
+GO
+
+EXECUTE HumanResources.uspGetEmployeesTest2 N'Ackerman', N'Pilar';
+-- Or
+EXEC HumanResources.uspGetEmployeesTest2 @LastName = N'Ackerman', @FirstName = N'Pilar';
+GO
+-- Or
+EXECUTE HumanResources.uspGetEmployeesTest2 @FirstName = N'Pilar', @LastName = N'Ackerman';
+GO
+
+
+Create Procedure InsertStudentrecord
+(
+ @StudentFirstName Varchar(200),
+ @StudentLastName  Varchar(200),
+ @StudentEmail     Varchar(50)
+) 
+As
+ Begin
+   Insert into tbl_Students (Firstname, lastname, Email)
+   Values(@StudentFirstName, @StudentLastName,@StudentEmail)
+ End
+
+Execute Getstudentname 1
+Exec Getstudentname 1
+
+Declare @Studentname as nvarchar(200)   -- Declaring the variable to collect the Studentname
+Declare @Studentemail as nvarchar(50)     -- Declaring the variable to collect the Studentemail
+Execute GetstudentnameInOutputVariable 1 , @Studentname output, @Studentemail output
+select @Studentname,@Studentemail      -- "Select" Statement is used to show the output from Procedure

@@ -1,0 +1,248 @@
+StoreProcedure
+****Cabecera***********
+
+CREATE OR REPLACE PACKAGE GESTION.SELECT_COBROS AS
+TYPE T_CURSOR IS REF CURSOR;
+PROCEDURE GetCobros
+(
+   numcobro IN NUMBER,
+   cur_cobro OUT T_CURSOR
+);
+PROCEDURE SavePago
+(
+    numcobro IN NUMBER,
+    fechatransaccion IN DATE,
+    numboleta IN NUMBER,
+    numautorizacion IN VARCHAR2,
+    correlativo63a IN VARCHAR2,
+    agencianum IN NUMBER,
+    agenciadireccion IN VARCHAR2,
+    agenciaoperador IN VARCHAR2,
+    montopagado IN DECIMAL,
+    mensaje OUT VARCHAR
+);
+PROCEDURE UpdatePago
+(
+    numcobro IN NUMBER,
+    agencianum IN NUMBER,
+    agenciadireccion IN VARCHAR2,
+    agenciaoperador IN VARCHAR2,
+    descripcion IN VARCHAR2,
+    fechatransaccion in DATE,
+    mensaje OUT VARCHAR
+);
+END SELECT_COBROS;
+/
+
+*******Cuerpo*************
+
+CREATE OR REPLACE PACKAGE BODY GESTION.SELECT_COBROS AS
+
+PROCEDURE GetCobros
+(
+    numcobro IN NUMBER,
+    cur_cobro OUT T_CURSOR
+)
+IS
+BEGIN
+    OPEN cur_cobro FOR
+    SELECT TMFAC.CORRELATIVO_COBRO AS NUMEROCOBRO,TMFAC.NIT_PROPONENTE AS NIT, TMFAC.NOMBRE_PROPONENTE AS CLIENTE, TCADM.DESCRIPCION AS SEDE, 
+CASE 
+    WHEN TCADM.CODIGO_UNIDAD_ADMINISTRATIVA in ( '17016','17138') THEN TMFAC.TOTAL_PAGO 
+    ELSE (TDFAC.CANTIDAD * TDCOS.COSTO_APLICABLE)
+END AS MONTO_TOTAL,
+CASE 
+    WHEN TCADM.CODIGO_UNIDAD_ADMINISTRATIVA = '17075' THEN TDCOS.DESCRIPCION||' '||TMFAC.CONCEPTO
+    WHEN TCADM.CODIGO_UNIDAD_ADMINISTRATIVA in ( '17016','17138') THEN TMFAC.CONCEPTO
+    ELSE TDCOS.DESCRIPCION||' '||TMFAC.OBSERVACIONES
+END AS DESCRIPCION_PAGO
+FROM GESTION.TM_FACTURACION TMFAC
+JOIN GESTION.TD_FACTURACION TDFAC ON TMFAC.CORRELATIVO_COBRO = TDFAC.CORRELATIVO_COBRO
+JOIN GESTION.TD_COSTOS TDCOS ON TDFAC.ID_COBROS = TDCOS.ID_COBROS AND TDFAC.ID_DCOBROS = TDCOS.ID_DCOBROS
+JOIN ALMACEN.TC_UNIDAD_ADMINISTRATIVA TCADM ON TCADM.CODIGO_UNIDAD_ADMINISTRATIVA = TMFAC.CODIGO_UNIDAD_ADMINISTRATIVA
+WHERE TMFAC.CORRELATIVO_COBRO = numcobro;
+
+END GetCobros;
+
+PROCEDURE SavePago
+(
+    numcobro IN NUMBER,
+    fechatransaccion in DATE,
+    numboleta IN NUMBER,
+    numautorizacion IN VARCHAR2,
+    correlativo63a IN VARCHAR2,
+    agencianum IN NUMBER,
+    agenciadireccion IN VARCHAR2,
+    agenciaoperador IN VARCHAR2,
+    montopagado IN DECIMAL,
+    mensaje OUT VARCHAR
+)
+IS
+    --pagado VARCHAR2(32767) := 'Pagado';
+    ultimoestado VARCHAR(25); 
+    montototal DECIMAL;
+    ultimafechapago DATE;
+    cnt NUMBER;
+    cntExiste NUMBER;
+BEGIN
+
+SELECT COUNT (*) INTO cntExiste FROM GESTION.TM_FACTURACION WHERE CORRELATIVO_COBRO = numcobro;
+
+    IF cntExiste > 0 THEN
+        BEGIN
+            SELECT COUNT (*) INTO cnt FROM GESTION.TD_PAGOS WHERE NUMERO_COBRO = numcobro; 
+
+            IF cnt > 0 THEN
+                BEGIN
+                    SELECT ESTADO,FECHA_TRANSACCION INTO ultimoestado,ultimafechapago FROM GESTION.TD_PAGOS WHERE ROWNUM = 1 AND NUMERO_COBRO = numcobro 
+                    ORDER BY CORRELATIVO_PAGO DESC;
+      
+                    SELECT CASE WHEN TCADM.CODIGO_UNIDAD_ADMINISTRATIVA = '17016' THEN TMFAC.TOTAL_PAGO ELSE (TDFAC.CANTIDAD*TDCOS.COSTO_APLICABLE)END INTO montototal
+                    FROM GESTION.TM_FACTURACION TMFAC
+                    JOIN GESTION.TD_FACTURACION TDFAC ON TMFAC.CORRELATIVO_COBRO = TDFAC.CORRELATIVO_COBRO
+                    JOIN ALMACEN.TC_UNIDAD_ADMINISTRATIVA TCADM ON TCADM.CODIGO_UNIDAD_ADMINISTRATIVA = TMFAC.CODIGO_UNIDAD_ADMINISTRATIVA
+                    JOIN GESTION.TD_COSTOS TDCOS ON TDFAC.ID_COBROS = TDCOS.ID_COBROS AND TDFAC.ID_DCOBROS = TDCOS.ID_DCOBROS
+                    WHERE TMFAC.CORRELATIVO_COBRO = numcobro;
+    
+                    IF ultimoestado = 'Anulado' THEN
+                        IF montototal = montopagado THEN
+                            BEGIN
+            
+                            SAVEPOINT save_transaction;
+    
+                            INSERT INTO GESTION.TD_PAGOS (NUMERO_COBRO,FECHA_TRANSACCION,NUMERO_BOLETA,NUMERO_AUTORIZACION,CORRELATIVO_63A,
+                            AGENCIA_NUMERO,AGENCIA_DIRECCION,AGENCIA_OPERADOR,FECHA_SERVER,MONTO_PAGADO,ESTADO)
+                            VALUES(numcobro,fechatransaccion,numboleta,numautorizacion,correlativo63a,agencianum,agenciadireccion,agenciaoperador,
+                            SYSDATE,montopagado,'Pagado');
+    
+                            COMMIT;
+                                mensaje := 'Transacción de pago realizado exitosamente.';
+    
+                            EXCEPTION
+                                WHEN OTHERS THEN 
+                                ROLLBACK TO save_transaction;
+        
+                                    mensaje := 'Error: Transacción no realizada.';
+                            END;
+                        ELSIF montototal != montopagado THEN
+                            BEGIN
+                                mensaje := 'Error: La cantidad a pagar es diferente a la cantidad de la Orden de Cobro.';
+                            EXCEPTION
+                                WHEN OTHERS THEN 
+                                    mensaje := 'Error: Transacción no realizada.';
+                            END;
+                        END IF;
+                    ELSIF ultimoestado = 'Pagado' THEN
+                        BEGIN
+                            mensaje := 'La Orden de Cobro' ||' '|| numcobro ||' '|| 'ya fue pagado el' ||' '|| ultimafechapago;
+                        EXCEPTION
+                            WHEN OTHERS THEN 
+                                mensaje := 'Error: Transacción no realizada.';
+                        END;
+                    END IF;
+                END;
+            ELSIF cnt = 0 THEN
+                BEGIN
+                    SELECT CASE WHEN TCADM.CODIGO_UNIDAD_ADMINISTRATIVA = '17016' THEN TMFAC.TOTAL_PAGO ELSE (TDFAC.CANTIDAD*TDCOS.COSTO_APLICABLE)END INTO montototal
+                    FROM GESTION.TM_FACTURACION TMFAC
+                    JOIN GESTION.TD_FACTURACION TDFAC ON TMFAC.CORRELATIVO_COBRO = TDFAC.CORRELATIVO_COBRO
+                    JOIN ALMACEN.TC_UNIDAD_ADMINISTRATIVA TCADM ON TCADM.CODIGO_UNIDAD_ADMINISTRATIVA = TMFAC.CODIGO_UNIDAD_ADMINISTRATIVA
+                    JOIN GESTION.TD_COSTOS TDCOS ON TDFAC.ID_COBROS = TDCOS.ID_COBROS AND TDFAC.ID_DCOBROS = TDCOS.ID_DCOBROS
+                    WHERE TMFAC.CORRELATIVO_COBRO = numcobro;
+        
+                    IF montototal = montopagado THEN
+                        BEGIN
+
+                        SAVEPOINT save_transaction;
+    
+                        INSERT INTO GESTION.TD_PAGOS (NUMERO_COBRO,FECHA_TRANSACCION,NUMERO_BOLETA,NUMERO_AUTORIZACION,CORRELATIVO_63A,
+                        AGENCIA_NUMERO,AGENCIA_DIRECCION,AGENCIA_OPERADOR,FECHA_SERVER,MONTO_PAGADO,ESTADO)
+                        VALUES(numcobro,fechatransaccion,numboleta,numautorizacion,correlativo63a,agencianum,agenciadireccion,agenciaoperador,
+                        SYSDATE,montopagado,'Pagado');
+    
+                        COMMIT;
+                            mensaje := 'Transacción de pago realizado exitosamente.';
+    
+                        EXCEPTION
+                            WHEN OTHERS THEN 
+                            ROLLBACK TO save_transaction;        
+                                mensaje := 'Error: Transacción no realizada.';
+                        END;
+                    ELSIF montototal != montopagado THEN
+                        BEGIN
+                            mensaje := 'Error: La cantidad a pagar es diferente a la cantidad de la Orden de Cobro.';
+                        EXCEPTION
+                            WHEN OTHERS THEN 
+                                mensaje := 'Error: Transacción no realizada.';
+                        END;
+                    END IF;
+                END;
+            END IF;
+        END;
+    ELSIF cntExiste = 0 THEN
+        BEGIN
+            mensaje := 'Error: La Orden de Cobro no existe.';
+            EXCEPTION
+            WHEN OTHERS THEN 
+                    mensaje := 'Error: Transacción no realizada.';
+        END;
+    END IF;
+END SavePago;
+
+PROCEDURE UpdatePago
+(
+    numcobro IN NUMBER,
+    agencianum IN NUMBER,
+    agenciadireccion IN VARCHAR2,
+    agenciaoperador IN VARCHAR2,
+    descripcion IN VARCHAR2,
+    fechatransaccion in DATE,
+    mensaje OUT VARCHAR
+)
+IS
+    cnt NUMBER;
+    ultimoestado VARCHAR(25);
+    BEGIN
+    SELECT COUNT (*) INTO cnt FROM GESTION.TD_PAGOS WHERE NUMERO_COBRO = numcobro;
+        IF cnt > 0 THEN
+            BEGIN    
+                SELECT PG.ESTADO INTO ultimoestado FROM GESTION.TD_PAGOS PG WHERE ROWNUM = 1 AND NUMERO_COBRO = numcobro
+                ORDER BY CORRELATIVO_PAGO DESC; 
+    
+                IF ultimoestado = 'Anulado' THEN
+                    BEGIN
+                        mensaje := 'El pago ya se encuentra anulado';
+                    EXCEPTION
+                        WHEN OTHERS THEN
+                            mensaje := 'Error: Transacción de actualización no realizada.';
+                    END;
+                ELSIF ultimoestado = 'Pagado' THEN
+                    BEGIN
+                        SAVEPOINT update_transaction;
+            
+                        UPDATE GESTION.TD_PAGOS SET ESTADO = 'Anulado', AGENCIA_NUMERO = agencianum,
+                        AGENCIA_DIRECCION = agenciadireccion, AGENCIA_OPERADOR = agenciaoperador,FECHA_TRANSACCION = fechatransaccion,FECHA_SERVER_MODIFICA = SYSDATE, 
+                        DESCRIPCION_MODIFICA = descripcion
+                        WHERE NUMERO_COBRO = numcobro AND ESTADO = 'Pagado';
+        
+                        COMMIT;
+                            mensaje := 'Se ha anulado el pago para cobro' ||' '|| numcobro;
+        
+                        EXCEPTION
+                            WHEN OTHERS THEN
+                            ROLLBACK TO update_transaction;
+                                mensaje := 'Error: Transacción de actualización no realizada para cobro' ||' '|| numcobro;
+                    END; 
+                END IF;
+            END;
+        ELSIF cnt = 0 THEN
+            BEGIN
+                mensaje := 'Error: La Orden de Cobro en pagos no existe.';
+            EXCEPTION
+                WHEN OTHERS THEN 
+                        mensaje := 'Error: Transacción no realizada.';
+            END;
+        END IF;
+    END UpdatePago;   
+END SELECT_COBROS;
+/
